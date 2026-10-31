@@ -1,0 +1,129 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MPD Player</title>
+<style>
+  body{font-family:sans-serif;max-width:900px;margin:1rem auto;padding:0 1rem}
+  input,button,textarea{width:100%;padding:.6rem;margin:.25rem 0;box-sizing:border-box}
+  video{width:100%;background:#000}
+  #list{max-height:50vh;overflow:auto;border:1px solid #8884}
+  .ch{display:flex;align-items:center;gap:.6rem;padding:.5rem;cursor:pointer;border-bottom:1px solid #8882}
+  .ch.on{background:#4a90e233}
+  .ch img{width:36px;height:36px;object-fit:contain}
+  .ch small{opacity:.6}
+</style>
+
+<video id="v" controls></video>
+<p id="now"></p><p id="err" style="color:#c00"></p>
+
+<input id="pl" placeholder="Playlist URL (.m3u)">
+<button id="load">Load playlist</button>
+<details><summary>Or paste playlist / single stream</summary>
+  <textarea id="paste" rows="5" placeholder="Paste M3U text here"></textarea>
+  <button id="loadPaste">Load pasted text</button>
+  <input id="url" placeholder="Single MPD URL">
+  <input id="key" placeholder="KID:KEY (hex) or license server URL">
+  <button id="go">Play single</button>
+</details>
+<input id="q" placeholder="Search channels">
+<div id="list"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.11/dist/shaka-player.compiled.js"></script>
+<script>
+shaka.polyfill.installAll();
+const $ = id => document.getElementById(id);
+const v = $('v'), err = $('err');
+const player = new shaka.Player();
+player.attach(v);
+player.addEventListener('error', e => err.textContent = 'Error ' + e.detail.code);
+
+let channels = [], cur = -1;
+
+function parseM3U(text){
+  const out = []; let c = {};
+  for (let line of text.split(/\r?\n/)){
+    line = line.trim();
+    if (!line) continue;
+    if (line.startsWith('#EXTINF')){
+      c.name = line.slice(line.lastIndexOf(',') + 1).trim();
+      c.logo = (line.match(/tvg-logo="([^"]*)"/) || [])[1];
+      c.group = (line.match(/group-title="([^"]*)"/) || [])[1];
+    } else if (line.startsWith('#KODIPROP:inputstream.adaptive.license_key=')){
+      c.key = line.split('license_key=')[1].trim();
+    } else if (!line.startsWith('#')){
+      c.url = line;
+      out.push({name: c.name || line, ...c});
+      c = {};
+    }
+  }
+  return out;
+}
+
+function render(){
+  const q = $('q').value.toLowerCase();
+  $('list').innerHTML = '';
+  channels.forEach((ch, i) => {
+    if (q && !(ch.name + ' ' + (ch.group || '')).toLowerCase().includes(q)) return;
+    const d = document.createElement('div');
+    d.className = 'ch' + (i === cur ? ' on' : '');
+    const img = ch.logo ? `<img src="${ch.logo}" loading="lazy" onerror="this.remove()">` : '';
+    d.innerHTML = `${img}<div></div>`;
+    d.lastChild.innerHTML = '<b></b><br><small></small>';
+    d.querySelector('b').textContent = ch.name;
+    d.querySelector('small').textContent = ch.group || '';
+    d.onclick = () => play(i);
+    $('list').appendChild(d);
+  });
+}
+
+async function playUrl(url, key){
+  err.textContent = '';
+  const drm = {};
+  if (key){
+    if (/^https?:/i.test(key)) drm.servers = {'com.widevine.alpha': key};
+    else if (key.includes(':')){ const [kid, k] = key.split(':'); drm.clearKeys = {[kid]: k}; }
+  }
+  player.configure({drm});
+  try { await player.load(url); v.play(); }
+  catch (e){ err.textContent = 'Error ' + (e.code || e.message); }
+}
+
+function play(i){
+  if (i < 0 || i >= channels.length) return;
+  cur = i;
+  $('now').textContent = channels[i].name;
+  render();
+  playUrl(channels[i].url, channels[i].key);
+}
+
+function setChannels(text){
+  channels = parseM3U(text);
+  cur = -1; render();
+  if (!channels.length) err.textContent = 'No channels found';
+}
+
+$('load').onclick = async () => {
+  err.textContent = '';
+  const u = $('pl').value.trim();
+  try {
+    const r = await fetch(u);
+    setChannels(await r.text());
+    try { localStorage.setItem('pl', u); } catch {}
+  } catch { err.textContent = 'Could not fetch playlist (CORS or bad URL)'; }
+};
+$('loadPaste').onclick = () => setChannels($('paste').value);
+$('go').onclick = () => playUrl($('url').value.trim(), $('key').value.trim());
+$('q').oninput = render;
+
+try { const s = localStorage.getItem('pl'); if (s){ $('pl').value = s; } } catch {}
+
+document.addEventListener('keydown', e => {
+  if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
+  if (e.key === ' '){ e.preventDefault(); v.paused ? v.play() : v.pause(); }
+  if (e.key === 'ArrowRight') v.currentTime += 10;
+  if (e.key === 'ArrowLeft') v.currentTime -= 10;
+  if (e.key === 'm') v.muted = !v.muted;
+  if (e.key === 'f') v.requestFullscreen();
+  if (e.key === 'ArrowUp' || e.key === 'PageUp'){ e.preventDefault(); play(cur - 1); }
+  if (e.key === 'ArrowDown' || e.key === 'PageDown'){ e.preventDefault(); play(cur + 1); }
+});
+</script>
